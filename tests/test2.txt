@@ -1,0 +1,30 @@
+Na atividade anterior, vocês especificaram em CSPm o funcionamento de uma máquina de bebidas com controle de estoque e reposição. Nesta atividade, vamos estender essa especificação para explorar composição paralela — tanto na arquitetura interna da máquina quanto no ambiente externo, com múltiplos usuários acessando-a simultaneamente.
+
+Parte 1 — Paralelismo Interno: Decomposição da Máquina
+
+Refatore a especificação da máquina de modo que ela seja composta por três subsistemas independentes operando em paralelo:
+
+- `Pagamento` — responsável por receber e validar o valor inserido pelo usuário para uma determinada bebida;
+- `Dispensador` — responsável por servir a bebida solicitada, consumindo as unidades de estoque correspondentes;
+- `GerenciadorEstoque` — responsável por monitorar os níveis de estoque, emitir avisos de falta e processar reposições.
+
+Requisitos:
+
+1. Identifique os eventos de sincronização entre os subsistemas — ou seja, os canais sobre os quais dois ou mais subsistemas precisam se coordenar — e use o operador `[| A |]` para compor os processos de forma adequada;
+2. Os subsistemas que não precisam se sincronizar em determinados eventos devem poder evoluir de forma independente; use interleaving (`|||`) onde for apropriado;
+3. A interface externa da máquina composta deve permanecer observacionalmente equivalente à especificação da atividade anterior do ponto de vista do usuário — isto é, o comportamento visível (os eventos nos canais públicos) não deve mudar.
+
+> Dica: Pense cuidadosamente em quais canais precisam ser compartilhados entre `Dispensador` e `GerenciadorEstoque`. O ato de servir uma bebida envolve necessariamente ambos.
+
+Parte 2 — Paralelismo Externo: Múltiplos Usuários
+
+Modele um ambiente com N usuários interagindo concorrentemente com a mesma máquina.
+
+1. Especifique um processo `Usuario` que represente o comportamento de um único usuário: ele escolhe uma bebida, insere o valor correspondente e aguarda o serviço;
+2. Componha `N` instâncias de `Usuario` em paralelo (use um valor de `N` configurável, como fizeram com os estoques). Considere usar um alfabeto parametrizado por ID de usuário para distinguir as instâncias;
+3. Componha os `N` usuários com a `Maquina` usando o operador de paralelismo adequado, sincronizando apenas sobre os canais que representam a interação usuário–máquina;
+4. Reflita sobre como o não-determinismo emerge naturalmente desta composição e descreva brevemente no relatório o que acontece quando dois usuários tentam adquirir a última unidade disponível de um ingrediente ao mesmo tempo.
+
+Parte 3 — Verificação com FDR4
+
+Escreva e verifique ausência de deadlock em todos os processos criados, desde os mais simples até as composições.

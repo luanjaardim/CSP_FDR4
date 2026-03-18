@@ -1,0 +1,64 @@
+datatype PRICE = pCafe | pCafeLeite | pChoco | pCappuc
+datatype ORDER = coffee | milkCoffee | chocolate | cappuccino
+datatype PRODUCT = coff | choc | milk
+datatype USER_PAYMENT_STATUS = not_available | wrong_price | payment_completed
+
+MAX_AMOUNT = 10
+PRODUCT_AMOUNT = {1..MAX_AMOUNT}
+channel payment: PRICE
+channel order, req_order, paid_order, comp_order: ORDER
+channel req_order_status: Bool
+channel store_miss: PRODUCT
+channel payment_status: USER_PAYMENT_STATUS
+channel take_prod: PRODUCT.{1..3}
+
+PAGAMENTO =
+    let
+        checkPayment(coffee, pCafe) = true
+        checkPayment(milkCoffee, pCafeLeite) = true
+        checkPayment(chocolate, pChoco) = true
+        checkPayment(cappuccino, pCappuc) = true
+        checkPayment(_, _) = false
+
+        PAYMENT_DONE(o) = payment_status!payment_completed -> paid_order!o -> PAGAMENTO
+        PAYMENT_FAIL = payment_status!wrong_price -> PAGAMENTO
+
+        AVAILABLE_PRODUCT(o) = payment?p:PRICE -> if checkPayment(o, p) then PAYMENT_DONE(o) else PAYMENT_FAIL
+        NOT_AVAILABLE_PRODUCT = payment_status!not_available -> PAGAMENTO
+    within order?o:ORDER -> req_order!o -> req_order_status?b:Bool -> if b then AVAILABLE_PRODUCT(o) else NOT_AVAILABLE_PRODUCT
+
+DISPENSADOR =
+    let
+        makeOrder(coffee) = take_prod!coff!3 -> deliverOrder(coffee)
+        makeOrder(milkCoffee) = take_prod!coff!1 -> take_prod!milk!2 -> deliverOrder(milkCoffee)
+        makeOrder(chocolate) = take_prod!choc!3 -> deliverOrder(chocolate)
+        makeOrder(cappuccino) = take_prod!coff!1 -> take_prod!milk!1 -> take_prod!choc!1 -> deliverOrder(cappuccino)
+
+        -- deliver the order to the client
+        deliverOrder(o) = comp_order!o -> DISPENSADOR
+    within paid_order?o -> makeOrder(o)
+
+GERENCIADOR_ESTOQUE(qC, qCh, qM) =
+    let
+        hasProductAvailable(coffee) = qC >= 3
+        hasProductAvailable(milkCoffee) = qC >= 1 and qM >= 2
+        hasProductAvailable(chocolate) = qCh >= 3
+        hasProductAvailable(cappuccino) = qC >= 1 and qM >= 1 and qCh >= 1
+
+        IS_PRODUCT_AVAILABLE = req_order?o -> req_order_status!hasProductAvailable(o) -> GERENCIADOR_ESTOQUE(qC, qCh, qM)
+
+        take(coff, a) = qC >= a & GERENCIADOR_ESTOQUE(qC - a, qCh, qM)
+        take(choc, a) = qCh >= a & GERENCIADOR_ESTOQUE(qC, qCh - a, qM)
+        take(milk, a) = qM >= a & GERENCIADOR_ESTOQUE(qC, qCh, qM - a)
+        TAKE_FROM_STOCK = take_prod?p?a -> take(p, a)
+
+        STORE_PRODUCT = GERENCIADOR_ESTOQUE(qC, qCh, qM)
+    within
+        IS_PRODUCT_AVAILABLE
+        []
+        -- take product to be used by DISPENSADOR
+        TAKE_FROM_STOCK
+--        []
+--        STORE_PRODUCT
+
+SYNC = (GERENCIADOR_ESTOQUE(3, 3, 3) [| {|take_prod|} |] DISPENSADOR) [| {|paid_order, req_order|} |] PAGAMENTO
