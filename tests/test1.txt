@@ -1,0 +1,13 @@
+Especifique em CSPm o funcionamento de uma máquina de servir tipos de bebidas de acordo com:
+
+(1) A máquina pode servir café, café com leite, chocolate, e cappuccino;
+(2) Cada bebida tem um preço, dado por pCafe, pCafeLeite, pChoco, e pCappuc;
+(3) O estoque da máquina é feito de unidades de café, leite e chocolate;
+(4) Os estoques iniciais devem ser números que possam ser facilmente configuráveis;
+(5) Cada bebida usa parte do estoque como segue:
+    (i) Café usa 3 unidades de café;
+    (ii) Café com leite usa 1 unidade de café e 2 unidades de leite;
+    (iii) Chocolate usa 3 unidades de chocolate;
+    (iv) Cappuccino usa 1 unidade de café, 1 unidade de chocolate e 1 unidade de leite;
+(6) A máquina deve avisar quando falta algum dos itens básicos do estoque na tela, bem como evita de servir as bebidas que dependem estes itens básicos até que sejam repostos;
+(7) A máquina deve permitir a reposição parcial ou total do estoque, podendo tratar reposições de itens básicos de forma indepenente.

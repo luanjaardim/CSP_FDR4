@@ -1,0 +1,66 @@
+datatype COFFEE = coffee | milkCoffee | chocolate | cappuccino
+datatype PRICE = pCoffee | pMilkCoffee | pChoco | pCappuc
+datatype PRODUCT = cof | milk | choc
+
+-- minimum requirements
+req_coffee_cof = 3
+req_milkCoffee_cof = 1
+req_milkCoffee_milk = 2
+req_chocolate_choc = 3
+req_cappuccino_cof = 1
+req_cappuccino_milk = 1
+req_cappuccino_choc = 1
+
+MAX_AMOUNT = 5
+AMOUNT = {1..MAX_AMOUNT}
+channel order: COFFEE
+channel cost: Int.PRICE -- falar disso
+channel store_prod: PRODUCT
+channel store_qt: AMOUNT
+channel amount_warn: COFFEE
+
+-- pC = price coffee
+-- pMC = price milk coffee
+-- pCH = price choco coffee
+-- pCP = price cappuccino
+-- qC = quantity coffee
+-- qM = quantity milk
+-- qCH = quantity chocolate
+VM(pC, pMC, pCH, pCP)(qC, qM, qCH) =
+    qC >= 0 and qC <= MAX_AMOUNT and
+    qM >= 0 and qM <= MAX_AMOUNT and
+    qCH >= 0 and qCH <= MAX_AMOUNT & VM_STATE(pC,pMC,pCH,pCP)(qC,qM,qCH)
+
+VM_STATE(pC, pMC, pCH, pCP)(qC, qM, qCH) = -- falar disso
+    let
+        updateStock(cof,  a, qC, qM, qCH) = (qC + a, qM, qCH)
+        updateStock(milk, a, qC, qM, qCH) = (qC, qM + a, qCH)
+        updateStock(choc, a, qC, qM, qCH) = (qC, qM, qCH + a)
+    within
+        (
+        (order?coffee ->
+            if qC < req_coffee_cof then amount_warn!coffee -> VM(pC, pMC, pCH, pCP)(qC, qM, qCH)
+            else cost!pC!pCoffee -> VM(pC, pMC, pCH, pCP)(qC - req_coffee_cof, qM, qCH))
+      []
+        (order?milkCoffee ->
+            if qC < req_milkCoffee_cof or qM < req_milkCoffee_milk then amount_warn!milkCoffee -> VM(pC, pMC, pCH, pCP)(qC, qM, qCH)
+            else cost!pMC!pMilkCoffee -> VM(pC, pMC, pCH, pCP)(qC - req_milkCoffee_cof, qM - req_milkCoffee_milk, qCH))
+      []
+        (order?chocolate ->
+            if qCH < req_chocolate_choc then amount_warn!chocolate -> VM(pC, pMC, pCH, pCP)(qC, qM, qCH)
+            else cost!pCH!pChoco -> VM(pC, pMC, pCH, pCP)(qC, qM, qCH - req_chocolate_choc))
+      []
+        (order?cappuccino ->
+            if qC < req_cappuccino_cof or qM < req_cappuccino_milk or qCH < req_cappuccino_choc then amount_warn!cappuccino -> VM(pC, pMC, pCH, pCP)(qC, qM, qCH)
+            else cost!pCP!pCappuc -> VM(pC, pMC, pCH, pCP)(qC - req_cappuccino_cof, qM - req_cappuccino_milk, qCH - req_cappuccino_choc))
+      []
+        (store_prod?prod -> store_qt?amount ->
+            if amount + (if prod==cof then qC
+                         else if prod==milk then qM
+                         else qCH) > MAX_AMOUNT
+            then STOP
+            else
+                let (nC, nM, nCH) = updateStock(prod, amount, qC, qM, qCH) within VM(pC, pMC, pCH, pCP)(nC, nM, nCH))
+        )
+
+STD_VM = VM(5, 7, 10, 8)
