@@ -2,20 +2,16 @@ datatype PRICE = pCafe | pCafeLeite | pChoco | pCappuc
 datatype ORDER = coffee | milkCoffee | chocolate | cappuccino
 datatype PRODUCT = coff | choc | milk
 datatype USER_PAYMENT_STATUS = not_available | wrong_price | payment_completed
-datatype STORE_STATUS = already_full | empty_stock | store_comp
 
 MAX_AMOUNT = 10
 PRODUCT_AMOUNT = {1..MAX_AMOUNT}
 channel payment: PRICE
 channel order, is_available, paid_order, comp_order: ORDER
 channel is_available_status: Bool
--- TODO: maybe use the same channel to store and take products
 channel take_prod: PRODUCT.{1..3}
 channel prod: PRODUCT
--- TODO: send a message to tell anything about the store status
 channel store_amount: PRODUCT_AMOUNT
 channel payment_status: USER_PAYMENT_STATUS
-channel store_status : STORE_STATUS
 -- event actions
 channel cook, deliver, store, compute_new_order
 
@@ -42,9 +38,9 @@ DISPENSADOR =
         takeOrder(cappuccino) = take_prod!coff!1 -> take_prod!milk!1 -> take_prod!choc!1 -> deliverOrder(cappuccino)
 
         -- deliver the order to the client
-        deliverOrder(o) = cook -> comp_order!o -> deliver -> DISPENSADOR
+        deliverOrder(o) = cook -> comp_order!o -> deliver -> STOP
     within 
-        paid_order?o -> takeOrder(o)
+        paid_order?o -> (DISPENSADOR ||| takeOrder(o))
 
 GERENCIADOR_ESTOQUE(qC, qCh, qM) =
     let
