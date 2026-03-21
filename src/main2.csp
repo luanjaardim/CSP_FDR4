@@ -1,10 +1,13 @@
 datatype PRICE = pCafe | pCafeLeite | pChoco | pCappuc
 datatype ORDER = coffee | milkCoffee | chocolate | cappuccino
 datatype PRODUCT = coff | choc | milk
+datatype USER_INFO = not_available | wrong_price | payment_completed | full_cap
 
 MAX_USERS = 2
 USER_IDS = {1..MAX_USERS}
-channel aloc_id, free_id: USER_IDS
+channel free_id: USER_IDS
+datatype USER_IDS_WITH_FAIL = ID.USER_IDS | FAIL_TO_ALOC
+channel try_aloc_id: USER_IDS_WITH_FAIL
 
 MAX_AMOUNT = 10
 PRODUCT_AMOUNT = {1..MAX_AMOUNT}
@@ -15,7 +18,7 @@ channel is_available_status: Bool
 channel take_prod: PRODUCT.{1..3}
 channel prod: PRODUCT
 channel store_amount: PRODUCT_AMOUNT
-channel payment_status: USER_PAYMENT_STATUS
+channel user_info: USER_INFO 
 -- event actions
 channel cook, store, compute_new_order
 channel deliver: USER_IDS
@@ -28,12 +31,15 @@ PAGAMENTO =
         checkPayment(cappuccino, pCappuc) = true
         checkPayment(_, _) = false
 
-        PAYMENT_DONE(o) = payment_status!payment_completed -> aloc_id?id -> paid_order!o!id -> PAGAMENTO
-        PAYMENT_FAIL(o) = payment_status!wrong_price -> AVAILABLE_PRODUCT(o)
+        PAYMENT_DONE(o, id) = user_info!payment_completed -> paid_order!o!id -> STOP
+        PAYMENT_FAIL(o, id) = user_info!wrong_price -> AVAILABLE_PRODUCT(o, id)
 
-        AVAILABLE_PRODUCT(o) = payment?p:PRICE -> if checkPayment(o, p) then PAYMENT_DONE(o) else PAYMENT_FAIL(o)
-        NOT_AVAILABLE_PRODUCT = payment_status!not_available -> PAGAMENTO
-    within compute_new_order -> order?o:ORDER -> is_available!o -> is_available_status?b:Bool -> if b then AVAILABLE_PRODUCT(o) else NOT_AVAILABLE_PRODUCT
+        AVAILABLE_PRODUCT(o, id) = payment?p:PRICE -> if checkPayment(o, p) then PAYMENT_DONE(o, id) else PAYMENT_FAIL(o, id)
+        NOT_AVAILABLE_PRODUCT = user_info!not_available -> STOP
+
+        LET_USER_ORDER(ID.id) = order?o:ORDER -> is_available!o -> is_available_status?b:Bool -> if b then AVAILABLE_PRODUCT(o, id) else NOT_AVAILABLE_PRODUCT
+        LET_USER_ORDER(FAIL_TO_ALOC) = user_info!full_cap -> STOP
+    within compute_new_order -> try_aloc_id?res -> (LET_USER_ORDER(res) ||| PAGAMENTO)
 
 DISPENSADOR =
     let
@@ -77,11 +83,14 @@ GERENCIADOR_ESTOQUE(qC, qCh, qM) =
 -- Manages the ID of client orders
 ID_MANAGER(ori_ids) =
     let
+        FAIL(ori_ids)(cur_ids) = try_aloc_id!FAIL_TO_ALOC -> AUX(ori_ids)(cur_ids)
+        SUCC(ori_ids)(cur_ids) = [] id:cur_ids @ try_aloc_id!ID.id -> AUX(ori_ids)(diff(cur_ids, {id}))
+
         AUX(ori_ids)(cur_ids) =
-              ([] id:cur_ids @ aloc_id!id -> AUX(ori_ids)(diff(cur_ids, {id})))
+              (if cur_ids == {} then FAIL(ori_ids)(cur_ids) else SUCC(ori_ids)(cur_ids))
             []
               free_id?id:diff(ori_ids, cur_ids) -> AUX(ori_ids)(union(cur_ids, {id}))
     within
         AUX(ori_ids)(ori_ids)
 
-VM = ((PAGAMENTO [| {|paid_order|} |] DISPENSADOR) [| {|aloc_id, free_id|} |] ID_MANAGER(USER_IDS)) [| {|take_prod, is_available, is_available_status|} |] GERENCIADOR_ESTOQUE(3,3,3)
+VM = ((PAGAMENTO [| {|paid_order|} |] DISPENSADOR) [| {|try_aloc_id, free_id|} |] ID_MANAGER(USER_IDS)) [| {|take_prod, is_available, is_available_status|} |] GERENCIADOR_ESTOQUE(3,3,3)
