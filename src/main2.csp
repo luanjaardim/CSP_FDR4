@@ -1,19 +1,24 @@
 datatype PRICE = pCafe | pCafeLeite | pChoco | pCappuc
 datatype ORDER = coffee | milkCoffee | chocolate | cappuccino
 datatype PRODUCT = coff | choc | milk
-datatype USER_PAYMENT_STATUS = not_available | wrong_price | payment_completed
+
+MAX_USERS = 2
+USER_IDS = {1..MAX_USERS}
+channel aloc_id, free_id: USER_IDS
 
 MAX_AMOUNT = 10
 PRODUCT_AMOUNT = {1..MAX_AMOUNT}
 channel payment: PRICE
-channel order, is_available, paid_order, comp_order: ORDER
+channel order, is_available: ORDER
+channel paid_order, comp_order: ORDER.USER_IDS
 channel is_available_status: Bool
 channel take_prod: PRODUCT.{1..3}
 channel prod: PRODUCT
 channel store_amount: PRODUCT_AMOUNT
 channel payment_status: USER_PAYMENT_STATUS
 -- event actions
-channel cook, deliver, store, compute_new_order
+channel cook, store, compute_new_order
+channel deliver: USER_IDS
 
 PAGAMENTO =
     let
@@ -23,7 +28,7 @@ PAGAMENTO =
         checkPayment(cappuccino, pCappuc) = true
         checkPayment(_, _) = false
 
-        PAYMENT_DONE(o) = payment_status!payment_completed -> paid_order!o -> PAGAMENTO
+        PAYMENT_DONE(o) = payment_status!payment_completed -> aloc_id?id -> paid_order!o!id -> PAGAMENTO
         PAYMENT_FAIL(o) = payment_status!wrong_price -> AVAILABLE_PRODUCT(o)
 
         AVAILABLE_PRODUCT(o) = payment?p:PRICE -> if checkPayment(o, p) then PAYMENT_DONE(o) else PAYMENT_FAIL(o)
@@ -32,15 +37,15 @@ PAGAMENTO =
 
 DISPENSADOR =
     let
-        takeOrder(coffee) = take_prod!coff!3 -> deliverOrder(coffee)
-        takeOrder(milkCoffee) = take_prod!coff!1 -> take_prod!milk!2 -> deliverOrder(milkCoffee)
-        takeOrder(chocolate) = take_prod!choc!3 -> deliverOrder(chocolate)
-        takeOrder(cappuccino) = take_prod!coff!1 -> take_prod!milk!1 -> take_prod!choc!1 -> deliverOrder(cappuccino)
+        takeOrder(coffee, id) = take_prod!coff!3 -> deliverOrder(coffee, id)
+        takeOrder(milkCoffee, id) = take_prod!coff!1 -> take_prod!milk!2 -> deliverOrder(milkCoffee, id)
+        takeOrder(chocolate, id) = take_prod!choc!3 -> deliverOrder(chocolate, id)
+        takeOrder(cappuccino, id) = take_prod!coff!1 -> take_prod!milk!1 -> take_prod!choc!1 -> deliverOrder(cappuccino, id)
 
         -- deliver the order to the client
-        deliverOrder(o) = cook -> comp_order!o -> deliver -> STOP
+        deliverOrder(o, id) = cook -> comp_order!o!id -> deliver!id -> free_id!id -> STOP
     within 
-        paid_order?o -> (DISPENSADOR ||| takeOrder(o))
+        paid_order?o?id -> (DISPENSADOR ||| takeOrder(o, id))
 
 GERENCIADOR_ESTOQUE(qC, qCh, qM) =
     let
@@ -69,4 +74,14 @@ GERENCIADOR_ESTOQUE(qC, qCh, qM) =
         -- store branch
         store -> prod?p -> STORE_PRODUCT(p)
 
-VM = (PAGAMENTO [| {|paid_order|} |] DISPENSADOR) [| {|take_prod, is_available, is_available_status|} |] GERENCIADOR_ESTOQUE(3,3,3)
+-- Manages the ID of client orders
+ID_MANAGER(ori_ids) =
+    let
+        AUX(ori_ids)(cur_ids) =
+              ([] id:cur_ids @ aloc_id!id -> AUX(ori_ids)(diff(cur_ids, {id})))
+            []
+              free_id?id:diff(ori_ids, cur_ids) -> AUX(ori_ids)(union(cur_ids, {id}))
+    within
+        AUX(ori_ids)(ori_ids)
+
+VM = ((PAGAMENTO [| {|paid_order|} |] DISPENSADOR) [| {|aloc_id, free_id|} |] ID_MANAGER(USER_IDS)) [| {|take_prod, is_available, is_available_status|} |] GERENCIADOR_ESTOQUE(3,3,3)
