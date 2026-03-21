@@ -94,3 +94,17 @@ ID_MANAGER(ori_ids) =
         AUX(ori_ids)(ori_ids)
 
 VM = ((PAGAMENTO [| {|paid_order|} |] DISPENSADOR) [| {|try_aloc_id, free_id|} |] ID_MANAGER(USER_IDS)) [| {|take_prod, is_available, is_available_status|} |] GERENCIADOR_ESTOQUE(3,3,3)
+
+channel satisfied, not_satisfied: USER_IDS
+USER =
+    let
+        AVAILABLE(o) = [] p: PRICE @ payment!p -> user_info?ui -> if ui == payment_completed then CORRECT_PRICE(o) else AVAILABLE(o)
+        NOT_AVAILABLE = user_info?ui -> ui == not_available & USER
+
+        CORRECT_PRICE(o) = paid_order?po:{o}?pid -> comp_order?ro:{o}?id:{pid} -> CORRECT_ORDER(id)
+        CORRECT_ORDER(id) = deliver?did -> if did == id then SUCC(id) else FAIL(id)
+
+        SUCC(id) = satisfied!id -> USER
+        FAIL(id) = not_satisfied!id -> USER
+    within
+        compute_new_order -> [] o: ORDER @ order!o -> is_available_status?b -> if b then AVAILABLE(o) else NOT_AVAILABLE
