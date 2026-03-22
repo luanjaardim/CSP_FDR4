@@ -1,7 +1,8 @@
-datatype PRICE = pCafe | pCafeLeite | pChoco | pCappuc
+datatype PRICE = pCafe | pCafeLeite | pChoco | pCappuc | cancel
 datatype ORDER = coffee | milkCoffee | chocolate | cappuccino
 datatype PRODUCT = coff | choc | milk
-datatype USER_INFO = not_available | wrong_price | payment_completed | full_cap
+datatype USER_INFO = not_available | wrong_price | payment_completed | payment_canceled | full_cap
+datatype STOCK_INFO = already_full.PRODUCT
 
 MAX_USERS = 2
 USER_IDS = {1..MAX_USERS}
@@ -12,13 +13,14 @@ channel try_aloc_id: USER_IDS_WITH_FAIL
 MAX_AMOUNT = 3
 PRODUCT_AMOUNT = {1..MAX_AMOUNT}
 channel payment: PRICE
-channel order, is_available: ORDER
+channel order, try_take_order: ORDER
+channel try_take_order_status: Bool
 channel paid_order, comp_order: ORDER.USER_IDS
-channel is_available_status: Bool
 channel take_prod: PRODUCT.{1..3}
 channel prod: PRODUCT
 channel store_amount: PRODUCT_AMOUNT
 channel user_info: USER_INFO
+channel stock_info: STOCK_INFO
 -- event actions
 channel cook, store, compute_new_order
 channel deliver: USER_IDS
@@ -31,14 +33,17 @@ PAGAMENTO =
         checkPayment(cappuccino, pCappuc) = true
         checkPayment(_, _) = false
 
-        PAYMENT_DONE(o, id) = user_info!payment_completed -> paid_order!o!id -> THREAD
-        PAYMENT_FAIL(o, id) = user_info!wrong_price -> AVAILABLE_PRODUCT(o, id)
+        CANCEL_PAYMENT(id) = user_info!payment_canceled -> free_id!id -> THREAD
+        PAYMENT_DONE(o, id) = paid_order!o!id -> THREAD -- Wait for GERENCIADOR_ESTOQUE to confirm the payment_completed status
+        PAYMENT_FAIL(p, o, id) = if p == cancel then CANCEL_PAYMENT(id) else user_info!wrong_price -> PAYMENT_SELECTION(o, id)
 
-        AVAILABLE_PRODUCT(o, id) = payment?p:PRICE -> if checkPayment(o, p) then PAYMENT_DONE(o, id) else PAYMENT_FAIL(o, id)
-        NOT_AVAILABLE_PRODUCT = user_info!not_available -> THREAD
+        PAYMENT_SELECTION(o, id) = payment?p:PRICE -> if checkPayment(o, p) then PAYMENT_DONE(o, id) else PAYMENT_FAIL(p, o, id)
+        --AVAILABLE_PRODUCT(o, id) = payment?p:PRICE -> if checkPayment(o, p) then PAYMENT_DONE(o, id) else PAYMENT_FAIL(p, o, id)
+        --NOT_AVAILABLE_PRODUCT = user_info!not_available -> THREAD
 
         MAX_THREADS = 2
-        THREAD = wait_id?id -> order?o:ORDER -> is_available!o -> is_available_status?b:Bool -> if b then AVAILABLE_PRODUCT(o, id) else NOT_AVAILABLE_PRODUCT
+        THREAD = wait_id?id -> order?o:ORDER -> PAYMENT_SELECTION(o, id)
+        --THREAD = wait_id?id -> order?o:ORDER -> is_available!o -> is_available_status?b:Bool -> if b then AVAILABLE_PRODUCT(o, id) else NOT_AVAILABLE_PRODUCT
         THREAD_POOL = ||| _:{1..MAX_THREADS} @ THREAD
 
         LET_USER_ORDER(ID.id) = wait_id!id -> AUX
@@ -52,43 +57,44 @@ DISPENSADOR =
         -- deliver the order to the client
         deliverOrder(o, id) = cook -> comp_order!o!id -> deliver!id -> free_id!id -> THREAD
 
-        takeOrder(coffee, id) = take_prod!coff!3 -> deliverOrder(coffee, id)
-        takeOrder(milkCoffee, id) = take_prod!coff!1 -> take_prod!milk!2 -> deliverOrder(milkCoffee, id)
-        takeOrder(chocolate, id) = take_prod!choc!3 -> deliverOrder(chocolate, id)
-        takeOrder(cappuccino, id) = take_prod!coff!1 -> take_prod!milk!1 -> take_prod!choc!1 -> deliverOrder(cappuccino, id)
+        AVAILABLE(o, id) = user_info!payment_completed -> deliverOrder(o, id)
+        NOT_AVAILABLE(id) = user_info!not_available -> user_info!payment_canceled -> free_id!id -> THREAD
+        IS_AVAILABLE(o, id) = try_take_order!o -> try_take_order_status?b -> if b then AVAILABLE(o, id) else NOT_AVAILABLE(id)
 
         MAX_THREADS = 2
-        THREAD = paid_order?o?id -> takeOrder(o, id)
+        THREAD = paid_order?o?id -> IS_AVAILABLE(o, id)
         THREAD_POOL = ||| _:{1..MAX_THREADS} @ THREAD
     within
         THREAD_POOL
 
 GERENCIADOR_ESTOQUE(qC, qCh, qM) =
     let
-        hasProductAvailable(coffee) = qC >= 3
+        hasProductAvailable(coffee)     = qC >= 3
         hasProductAvailable(milkCoffee) = qC >= 1 and qM >= 2
-        hasProductAvailable(chocolate) = qCh >= 3
+        hasProductAvailable(chocolate)  = qCh >= 3
         hasProductAvailable(cappuccino) = qC >= 1 and qM >= 1 and qCh >= 1
 
-        IS_PRODUCT_AVAILABLE = is_available?o -> is_available_status!hasProductAvailable(o) -> GERENCIADOR_ESTOQUE(qC, qCh, qM)
+        take(coffee)     = GERENCIADOR_ESTOQUE(qC - 3, qCh, qM)
+        take(milkCoffee) = GERENCIADOR_ESTOQUE(qC - 1, qCh, qM - 2)
+        take(chocolate)  = GERENCIADOR_ESTOQUE(qC, qCh - 3, qM)
+        take(cappuccino) = GERENCIADOR_ESTOQUE(qC - 1, qCh - 1, qM - 1)
+        TAKE_ORDER(o) = try_take_order_status!true -> take(o)
+        FAIL = try_take_order_status!false -> GERENCIADOR_ESTOQUE(qC, qCh, qM)
 
-        take(coff, a) = qC >= a & GERENCIADOR_ESTOQUE(qC - a, qCh, qM)
-        take(choc, a) = qCh >= a & GERENCIADOR_ESTOQUE(qC, qCh - a, qM)
-        take(milk, a) = qM >= a & GERENCIADOR_ESTOQUE(qC, qCh, qM - a)
-        TAKE_FROM_STOCK = take_prod?p?a -> take(p, a)
+        TAKE_FROM_STOCK = try_take_order?o -> if hasProductAvailable(o) then TAKE_ORDER(o) else FAIL
 
         STORE_PRODUCT(coff) = store_amount?a:{1..MAX_AMOUNT-qC} -> GERENCIADOR_ESTOQUE(qC + a, qCh, qM)
         STORE_PRODUCT(choc) = store_amount?a:{1..MAX_AMOUNT-qCh} -> GERENCIADOR_ESTOQUE(qC, qCh + a, qM)
         STORE_PRODUCT(milk) = store_amount?a:{1..MAX_AMOUNT-qM} -> GERENCIADOR_ESTOQUE(qC, qCh, qM + a)
+        CHECK_FULL(coff) = if qC == MAX_AMOUNT then stock_info!already_full.coff -> GERENCIADOR_ESTOQUE(qC, qCh, qM) else STORE_PRODUCT(coff)
+        CHECK_FULL(choc) = if qCh == MAX_AMOUNT then stock_info!already_full.choc -> GERENCIADOR_ESTOQUE(qC, qCh, qM) else STORE_PRODUCT(choc)
+        CHECK_FULL(milk) = if qM == MAX_AMOUNT then stock_info!already_full.milk -> GERENCIADOR_ESTOQUE(qC, qCh, qM) else STORE_PRODUCT(milk)
     within
-        -- check the order availability
-        IS_PRODUCT_AVAILABLE
-        []
         -- take product to be used by DISPENSADOR
         TAKE_FROM_STOCK
         []
         -- store branch
-        store -> prod?p -> STORE_PRODUCT(p)
+        store -> prod?p -> CHECK_FULL(p)
 
 -- Manages the ID of client orders
 ID_MANAGER(ori_ids) =
@@ -103,7 +109,7 @@ ID_MANAGER(ori_ids) =
     within
         AUX(ori_ids)(ori_ids)
 
-VM = ((PAGAMENTO [| {|paid_order|} |] DISPENSADOR) [| {|try_aloc_id, free_id|} |] ID_MANAGER(USER_IDS)) [| {|take_prod, is_available, is_available_status|} |] GERENCIADOR_ESTOQUE(3,3,3)
+VM = ((PAGAMENTO [| {|paid_order|} |] DISPENSADOR) [| {|try_aloc_id, free_id|} |] ID_MANAGER(USER_IDS)) [| {|take_prod, try_take_order, try_take_order_status|} |] GERENCIADOR_ESTOQUE(3,3,3)
 assert VM :[deadlock free]
 
 channel satisfied, not_satisfied: USER_IDS
