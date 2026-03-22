@@ -1,8 +1,8 @@
 datatype PRICE = pCafe | pCafeLeite | pChoco | pCappuc | cancel
 datatype ORDER = coffee | milkCoffee | chocolate | cappuccino
 datatype PRODUCT = coff | choc | milk
-datatype USER_INFO = not_available | wrong_price | payment_completed | payment_canceled | full_cap
-datatype STOCK_INFO = already_full.PRODUCT
+datatype USER_INFO = not_available | wrong_price | payment_completed | payment_canceled | processing_payment | full_cap
+datatype STOCK_INFO = already_full.PRODUCT | prod_miss.ORDER
 
 MAX_USERS = 2
 USER_IDS = {1..MAX_USERS}
@@ -12,14 +12,14 @@ channel try_aloc_id: USER_IDS_WITH_FAIL
 
 MAX_AMOUNT = 3
 PRODUCT_AMOUNT = {1..MAX_AMOUNT}
-channel payment: PRICE
-channel order, try_take_order: ORDER
+channel payment: PRICE.USER_IDS
+channel try_take_order: ORDER
 channel try_take_order_status: Bool
-channel paid_order, comp_order: ORDER.USER_IDS
+channel order, paid_order, comp_order: ORDER.USER_IDS
 channel take_prod: PRODUCT.{1..3}
 channel prod: PRODUCT
 channel store_amount: PRODUCT_AMOUNT
-channel user_info: USER_INFO
+channel user_info: USER_INFO.{0..MAX_USERS} -- User id 0 to notify about full capacity
 channel stock_info: STOCK_INFO
 -- event actions
 channel cook, store, compute_new_order
@@ -33,21 +33,19 @@ PAGAMENTO =
         checkPayment(cappuccino, pCappuc) = true
         checkPayment(_, _) = false
 
-        CANCEL_PAYMENT(id) = user_info!payment_canceled -> free_id!id -> THREAD
-        PAYMENT_DONE(o, id) = paid_order!o!id -> THREAD -- Wait for GERENCIADOR_ESTOQUE to confirm the payment_completed status
-        PAYMENT_FAIL(p, o, id) = if p == cancel then CANCEL_PAYMENT(id) else user_info!wrong_price -> PAYMENT_SELECTION(o, id)
+        CANCEL_PAYMENT(id) = user_info!payment_canceled!id -> free_id!id -> THREAD
+        -- Wait for GERENCIADOR_ESTOQUE to confirm the payment_completed status
+        PAYMENT_DONE(o, id) = user_info!processing_payment!id -> paid_order!o!id -> THREAD
+        PAYMENT_FAIL(p, o, id) = if p == cancel then CANCEL_PAYMENT(id) else user_info!wrong_price!id -> PAYMENT_SELECTION(o, id)
 
-        PAYMENT_SELECTION(o, id) = payment?p:PRICE -> if checkPayment(o, p) then PAYMENT_DONE(o, id) else PAYMENT_FAIL(p, o, id)
-        --AVAILABLE_PRODUCT(o, id) = payment?p:PRICE -> if checkPayment(o, p) then PAYMENT_DONE(o, id) else PAYMENT_FAIL(p, o, id)
-        --NOT_AVAILABLE_PRODUCT = user_info!not_available -> THREAD
+        PAYMENT_SELECTION(o, id) = payment?p?_:{id} -> if checkPayment(o, p) then PAYMENT_DONE(o, id) else PAYMENT_FAIL(p, o, id)
 
         MAX_THREADS = 2
-        THREAD = wait_id?id -> order?o:ORDER -> PAYMENT_SELECTION(o, id)
-        --THREAD = wait_id?id -> order?o:ORDER -> is_available!o -> is_available_status?b:Bool -> if b then AVAILABLE_PRODUCT(o, id) else NOT_AVAILABLE_PRODUCT
+        THREAD = wait_id?id -> order?o?_:{id} -> PAYMENT_SELECTION(o, id)
         THREAD_POOL = ||| _:{1..MAX_THREADS} @ THREAD
 
         LET_USER_ORDER(ID.id) = wait_id!id -> AUX
-        LET_USER_ORDER(FAIL_TO_ALOC) = user_info!full_cap -> AUX
+        LET_USER_ORDER(FAIL_TO_ALOC) = user_info!full_cap!0 -> AUX
 
         AUX = compute_new_order -> try_aloc_id?res -> LET_USER_ORDER(res)
     within THREAD_POOL [| {|wait_id|} |] AUX
@@ -57,8 +55,8 @@ DISPENSADOR =
         -- deliver the order to the client
         deliverOrder(o, id) = cook -> comp_order!o!id -> deliver!id -> free_id!id -> THREAD
 
-        AVAILABLE(o, id) = user_info!payment_completed -> deliverOrder(o, id)
-        NOT_AVAILABLE(id) = user_info!not_available -> user_info!payment_canceled -> free_id!id -> THREAD
+        AVAILABLE(o, id) = user_info!payment_completed!id -> deliverOrder(o, id)
+        NOT_AVAILABLE(id) = user_info!not_available!id -> user_info!payment_canceled!id -> free_id!id -> THREAD
         IS_AVAILABLE(o, id) = try_take_order!o -> try_take_order_status?b -> if b then AVAILABLE(o, id) else NOT_AVAILABLE(id)
 
         MAX_THREADS = 2
@@ -79,9 +77,9 @@ GERENCIADOR_ESTOQUE(qC, qCh, qM) =
         take(chocolate)  = GERENCIADOR_ESTOQUE(qC, qCh - 3, qM)
         take(cappuccino) = GERENCIADOR_ESTOQUE(qC - 1, qCh - 1, qM - 1)
         TAKE_ORDER(o) = try_take_order_status!true -> take(o)
-        FAIL = try_take_order_status!false -> GERENCIADOR_ESTOQUE(qC, qCh, qM)
+        FAIL(o) = try_take_order_status!false -> stock_info!prod_miss.o -> GERENCIADOR_ESTOQUE(qC, qCh, qM)
 
-        TAKE_FROM_STOCK = try_take_order?o -> if hasProductAvailable(o) then TAKE_ORDER(o) else FAIL
+        TAKE_FROM_STOCK = try_take_order?o -> if hasProductAvailable(o) then TAKE_ORDER(o) else FAIL(o)
 
         STORE_PRODUCT(coff) = store_amount?a:{1..MAX_AMOUNT-qC} -> GERENCIADOR_ESTOQUE(qC + a, qCh, qM)
         STORE_PRODUCT(choc) = store_amount?a:{1..MAX_AMOUNT-qCh} -> GERENCIADOR_ESTOQUE(qC, qCh + a, qM)
@@ -109,19 +107,34 @@ ID_MANAGER(ori_ids) =
     within
         AUX(ori_ids)(ori_ids)
 
-VM = ((PAGAMENTO [| {|paid_order|} |] DISPENSADOR) [| {|try_aloc_id, free_id|} |] ID_MANAGER(USER_IDS)) [| {|take_prod, try_take_order, try_take_order_status|} |] GERENCIADOR_ESTOQUE(3,3,3)
-assert VM :[deadlock free]
+VM = (PAGAMENTO [| {|paid_order|} |] DISPENSADOR) [| {|try_aloc_id, free_id|} |] ID_MANAGER(USER_IDS)
+SYSTEM = VM [| {|take_prod, try_take_order, try_take_order_status|} |] GERENCIADOR_ESTOQUE(MAX_AMOUNT, MAX_AMOUNT, MAX_AMOUNT)
+assert SYSTEM :[deadlock free]
 
 channel satisfied, not_satisfied: USER_IDS
 USER =
     let
-        AVAILABLE(o) = [] p: PRICE @ payment!p -> user_info?ui -> if ui == payment_completed then CORRECT_PRICE(o) else AVAILABLE(o)
-        NOT_AVAILABLE = user_info?ui -> ui == not_available & USER
+        CHECK_FULL(FAIL_TO_ALOC) = user_info?full_cap?0 -> USER
+        CHECK_FULL(ID.id) = MAKE_ORDER(id)
 
-        CORRECT_PRICE(o) = paid_order?po:{o}?pid -> comp_order?ro:{o}?id:{pid} -> CORRECT_ORDER(id)
-        CORRECT_ORDER(id) = deliver?did -> if did == id then SUCC(id) else FAIL(id)
+        MAKE_ORDER(id) = [] o: ORDER @ order!o!id -> PAYMENT(o, id)
+        PAYMENT(o, id) = [] p: PRICE @ payment!p!id -> user_info?ui?_:{id} -> CHECK_USER_INFO_AFTER_PAYMENT(o, id, ui)
+
+        CHECK_USER_INFO_AFTER_PAYMENT(o, id, wrong_price) = PAYMENT(o, id)
+        CHECK_USER_INFO_AFTER_PAYMENT(o, id, payment_canceled) = USER
+        CHECK_USER_INFO_AFTER_PAYMENT(o, id, processing_payment) = user_info?ui?_:{id} -> CHECK_USER_ORDER_AVAIL(id, ui)
+        CHECK_USER_INFO_AFTER_PAYMENT(o, id, _) = STOP -- should not be reachable
+
+        CHECK_USER_ORDER_AVAIL(id, not_available) = user_info?res?_:{id} -> res == payment_canceled & FAIL(id)
+        CHECK_USER_ORDER_AVAIL(id, payment_completed) = deliver?_:{id} -> SUCC(id)
+        CHECK_USER_ORDER_AVAIL(id, _) = STOP -- should not be reachable
 
         SUCC(id) = satisfied!id -> USER
         FAIL(id) = not_satisfied!id -> USER
     within
-        compute_new_order -> [] o: ORDER @ order!o -> is_available_status?b -> if b then AVAILABLE(o) else NOT_AVAILABLE
+        compute_new_order -> try_aloc_id?res -> CHECK_FULL(res)
+
+USERS = ||| _:{1..MAX_USERS} @ USER
+
+WORKING_SYSTEM = SYSTEM [| {|compute_new_order, order, payment, user_info, deliver, try_aloc_id|} |] USERS
+assert WORKING_SYSTEM :[deadlock free]
