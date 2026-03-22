@@ -1,27 +1,29 @@
 datatype PRICE = pCafe | pCafeLeite | pChoco | pCappuc | cancel
 datatype ORDER = coffee | milkCoffee | chocolate | cappuccino
 datatype PRODUCT = coff | choc | milk
+-- Interface channel with the user
 datatype USER_INFO = not_available | wrong_price | payment_completed | payment_canceled | processing_payment | full_cap
 datatype STOCK_INFO = already_full.PRODUCT | prod_miss.ORDER
 
 MAX_USERS = 2
 USER_IDS = {1..MAX_USERS}
 channel free_id, wait_id: USER_IDS
+-- This is used when trying to allocate an ID, that can fail if the MAX_USERS capacity was reached
 datatype USER_IDS_WITH_FAIL = ID.USER_IDS | FAIL_TO_ALOC
 channel try_aloc_id: USER_IDS_WITH_FAIL
 
+-- MAX_AMOUNT of PRODUCT that can be stored
 MAX_AMOUNT = 3
 PRODUCT_AMOUNT = {1..MAX_AMOUNT}
 channel payment: PRICE.USER_IDS
 channel try_take_order: ORDER
 channel try_take_order_status: Bool
 channel order, paid_order, comp_order: ORDER.USER_IDS
-channel take_prod: PRODUCT.{1..3}
 channel prod: PRODUCT
 channel store_amount: PRODUCT_AMOUNT
-channel user_info: USER_INFO.{0..MAX_USERS} -- User id 0 to notify about full capacity
-channel stock_info: STOCK_INFO
--- event actions
+channel user_info: USER_INFO.{0..MAX_USERS} -- User id = 0 to notify about full capacity
+channel stock_info: STOCK_INFO -- interface channel to warn about storage status
+-- some event actions
 channel cook, store, compute_new_order
 channel deliver: USER_IDS
 
@@ -41,12 +43,14 @@ PAGAMENTO =
         PAYMENT_SELECTION(o, id) = payment?p?_:{id} -> if checkPayment(o, p) then PAYMENT_DONE(o, id) else PAYMENT_FAIL(p, o, id)
 
         MAX_THREADS = 2
+        -- handles a client operation, ask for his order, proccess payment, then goes back sleep
         THREAD = wait_id?id -> order?o?_:{id} -> PAYMENT_SELECTION(o, id)
         THREAD_POOL = ||| _:{1..MAX_THREADS} @ THREAD
 
         LET_USER_ORDER(ID.id) = wait_id!id -> AUX
         LET_USER_ORDER(FAIL_TO_ALOC) = user_info!full_cap!0 -> AUX
 
+        -- AUX is the main thread, always waiting for new clients and sending them to a specific THREAD
         AUX = compute_new_order -> try_aloc_id?res -> LET_USER_ORDER(res)
     within THREAD_POOL [| {|wait_id|} |] AUX
 
@@ -61,17 +65,21 @@ DISPENSADOR =
 
         MAX_THREADS = 2
         THREAD = paid_order?o?id -> IS_AVAILABLE(o, id)
+        -- Always waiting for new paid_orders received from the PAGAMENTO process, check if they are available,
+        -- then cook and deliver it, every order is handled concurrently by a THREAD
         THREAD_POOL = ||| _:{1..MAX_THREADS} @ THREAD
     within
         THREAD_POOL
 
 GERENCIADOR_ESTOQUE(qC, qCh, qM) =
     let
+        -- verifies the ORDER availability
         hasProductAvailable(coffee)     = qC >= 3
         hasProductAvailable(milkCoffee) = qC >= 1 and qM >= 2
         hasProductAvailable(chocolate)  = qCh >= 3
         hasProductAvailable(cappuccino) = qC >= 1 and qM >= 1 and qCh >= 1
 
+        -- send back the PRODUCT needed by the DISPENSADOR if available
         take(coffee)     = GERENCIADOR_ESTOQUE(qC - 3, qCh, qM)
         take(milkCoffee) = GERENCIADOR_ESTOQUE(qC - 1, qCh, qM - 2)
         take(chocolate)  = GERENCIADOR_ESTOQUE(qC, qCh - 3, qM)
@@ -81,9 +89,12 @@ GERENCIADOR_ESTOQUE(qC, qCh, qM) =
 
         TAKE_FROM_STOCK = try_take_order?o -> if hasProductAvailable(o) then TAKE_ORDER(o) else FAIL(o)
 
+        -- receives the amount of PRODUCT that is going to be stored, updating its internal stock
         STORE_PRODUCT(coff) = store_amount?a:{1..MAX_AMOUNT-qC} -> GERENCIADOR_ESTOQUE(qC + a, qCh, qM)
         STORE_PRODUCT(choc) = store_amount?a:{1..MAX_AMOUNT-qCh} -> GERENCIADOR_ESTOQUE(qC, qCh + a, qM)
         STORE_PRODUCT(milk) = store_amount?a:{1..MAX_AMOUNT-qM} -> GERENCIADOR_ESTOQUE(qC, qCh, qM + a)
+
+        -- checks if the stock is already at its limit, warning if it is
         CHECK_FULL(coff) = if qC == MAX_AMOUNT then stock_info!already_full.coff -> GERENCIADOR_ESTOQUE(qC, qCh, qM) else STORE_PRODUCT(coff)
         CHECK_FULL(choc) = if qCh == MAX_AMOUNT then stock_info!already_full.choc -> GERENCIADOR_ESTOQUE(qC, qCh, qM) else STORE_PRODUCT(choc)
         CHECK_FULL(milk) = if qM == MAX_AMOUNT then stock_info!already_full.milk -> GERENCIADOR_ESTOQUE(qC, qCh, qM) else STORE_PRODUCT(milk)
@@ -108,9 +119,10 @@ ID_MANAGER(ori_ids) =
         AUX(ori_ids)(ori_ids)
 
 VM = (PAGAMENTO [| {|paid_order|} |] DISPENSADOR) [| {|try_aloc_id, free_id|} |] ID_MANAGER(USER_IDS)
-SYSTEM = VM [| {|take_prod, try_take_order, try_take_order_status|} |] GERENCIADOR_ESTOQUE(MAX_AMOUNT, MAX_AMOUNT, MAX_AMOUNT)
+SYSTEM = VM [| {|try_take_order, try_take_order_status|} |] GERENCIADOR_ESTOQUE(MAX_AMOUNT, MAX_AMOUNT, MAX_AMOUNT)
 assert SYSTEM :[deadlock free]
 
+-- USER feedback is always important
 channel satisfied, not_satisfied: USER_IDS
 USER =
     let
@@ -134,7 +146,7 @@ USER =
     within
         compute_new_order -> try_aloc_id?res -> CHECK_FULL(res)
 
-USERS = ||| _:{1..MAX_USERS} @ USER
+USERS = ||| _:USER_IDS @ USER
 
 WORKING_SYSTEM = SYSTEM [| {|compute_new_order, order, payment, user_info, deliver, try_aloc_id|} |] USERS
 assert WORKING_SYSTEM :[deadlock free]
