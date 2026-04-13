@@ -52,7 +52,7 @@ PAGAMENTO =
         MAX_THREADS = 2
         -- handles a client operation, ask for his order, proccess payment, then goes back sleep
         THREAD = wait_id?id -> NON_DETERM_EXEC(id)
-        NON_DETERM_EXEC(id) = 
+        NON_DETERM_EXEC(id) =
             order?o?_:{id} -> PAYMENT_SELECTION(o, id)
         |~|
             unexpected_error!order_error -> free_id!id -> THREAD
@@ -144,8 +144,10 @@ ID_MANAGER(ori_ids) =
         AUX(ori_ids)(ori_ids)
 
 VM = (PAGAMENTO [| {|paid_order|} |] DISPENSADOR) [| {|try_aloc_id, free_id|} |] ID_MANAGER(USER_IDS)
-SYSTEM = VM [| {|try_take_order, try_take_order_status, cook, product_exception|} |] GERENCIADOR_ESTOQUE(MAX_AMOUNT, 0, MAX_AMOUNT)
+SYSTEM = VM [| {|try_take_order, try_take_order_status, cook, product_exception|} |] GERENCIADOR_ESTOQUE(MAX_AMOUNT, MAX_AMOUNT, MAX_AMOUNT)
 assert SYSTEM :[deadlock free]
+assert SYSTEM :[divergence free]
+assert SYSTEM :[deterministic]
 
 -- USER feedback is always important
 channel satisfied, not_satisfied: USER_IDS
@@ -158,7 +160,7 @@ USER =
                 ([] o: ORDER @ order!o!id -> PAYMENT(o, id))
             []
                 unexpected_error?order_error -> FAIL(id)
-        PAYMENT(o, id) = 
+        PAYMENT(o, id) =
                 ([] p: PRICE @ payment!p!id -> user_info?ui?_:{id} -> CHECK_USER_INFO_AFTER_PAYMENT(o, id, ui))
             []
                 unexpected_error?pagamento_error -> FAIL(id)
@@ -173,7 +175,7 @@ USER =
 
         CHECK_USER_ORDER_AVAIL(id, not_available) = user_info?res?_:{id} -> res == payment_canceled & FAIL(id)
         CHECK_USER_ORDER_AVAIL(id, payment_completed) =
-                deliver?_:{id} -> SUCC(id)
+                (deliver?rid -> if id == rid then SUCC(id) else FAIL(id))
             []
                 unexpected_error?estoque_error -> user_info?res?_:{id} -> CHECK_USER_ORDER_AVAIL(id, res)
         CHECK_USER_ORDER_AVAIL(id, chargeback) = FAIL(id)
@@ -186,6 +188,8 @@ USER =
 
 USERS = ||| _:USER_IDS @ USER
 
-WORKING_SYSTEM = SYSTEM [| {|compute_new_order, order, payment, user_info, deliver, try_aloc_id|} |] USERS
+WORKING_SYSTEM = SYSTEM [| {|compute_new_order, order, payment, user_info, deliver, try_aloc_id, unexpected_error|} |] USERS
                         \ {|try_aloc_id, free_id, wait_id, paid_order, try_take_order, try_take_order_status|}
 assert WORKING_SYSTEM :[deadlock free]
+assert WORKING_SYSTEM :[divergence free]
+assert WORKING_SYSTEM :[deterministic]
